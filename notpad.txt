@@ -1,0 +1,353 @@
+
+                        -----------------------Carbon Aware Kubernetes-------------------
+# Why we need this
+
+* Electricity isn’t equally “clean” everywhere or every hour—grid carbon intensity swings with wind, sun, and fuel mix.
+* Today most platforms scale purely on **demand** (CPU, QPS) and ignore **supply cleanliness**. That wastes a big, easy win.
+* If we can shift marginal compute toward cleaner regions/times **without hurting SLOs**, we cut emissions immediately—no hardware changes, no user friction.
+
+# What your project does
+
+* Runs a **Kubernetes autoscaler** that looks at two signals each loop:
+
+  1. **CPU demand** (from metrics-server or simulation), and
+  2. **Carbon intensity** per region (ElectricityMaps, cached 5 min).
+* Nodes are labeled by region (e.g., `region=france|denmark|latvia`), and each region has its own Deployment.
+* **Decision rule (stable, anti-flap):**
+
+  * If cluster avg CPU is high → **scale up the cleanest region** first.
+  * If low → **scale down the dirtiest region** with replicas above `MIN_REPLICAS`; if that’s at min, fall back to the next dirtiest.
+  * Requires `HOLD_CYCLES` consecutive breaches and waits a `COOLDOWN` between actions.
+* Safety rails: global `MIN_REPLICAS`/`MAX_REPLICAS`, baseline “healing” to ensure floors, 5-minute carbon cache to avoid API rate limits.
+* Operable: env-driven thresholds, structured logs (or pretty console with emojis), standard RBAC using the `deployments/scale` subresource.
+
+# Why this is practical (and different)
+
+* **Drop-in**: No app changes; just Deployments per region and node labels.
+* **Latency-aware by design**: Keep `MIN_REPLICAS` everywhere for steady UX; move *excess* capacity to clean power.
+* **Cost-aligned**: Clean power often correlates with cheaper power—emissions cuts can reduce spend.
+
+# How this helps a better future
+
+* **Immediate reductions**: Turns thousands of tiny scaling choices into continuous avoided grams of CO₂.
+* **Grid-friendly demand**: Flexible workloads follow renewables, easing curtailment and peaker ramps.
+* **A runway to 24/7 clean**: As grids publish real-time signals, your autoscaler already knows how to react.
+* **Cultural shift**: Makes “carbon-aware” the default knob alongside CPU/memory—normalizes greener operations.
+
+# Where it fits (and where it doesn’t)
+
+* Great for: web tiers with bursty traffic, batch/CI, queue workers, AI training/inference with some flexibility.
+* Caution for: ultra-low-latency systems with strict locality; use higher `MIN_REPLICAS` and tighter bounds.
+
+# How to measure success
+
+* **Emissions avoided** = (replica-hours shifted) × (carbon delta clean vs. dirty).
+* **Reliability**: unchanged or improved latency/error budgets.
+* **Cost**: equal or lower spend per request/epoch.
+* **Stability**: low oscillation (thanks to HOLD/COOLDOWN).
+
+# Sensible next steps
+
+* Per-region min/max & budgets; job/queue integrations; max-CPU (not avg) trigger option; Prometheus metrics & /healthz; leader election; Helm chart; 24/7 clean-energy targets.
+
+**Bottom line:** this project makes the cloud **care where its watts come from**—and does it with today’s tools. It’s a small operational change with outsized, compounding climate impact.
+
+
+
+
+
+
+* Carbon-Aware Autoscaler: a Go service that scales regional workloads based on CPU demand and grid carbon intensity.
+* Stack: Go 1.25, Kubernetes client-go, zap logging, optional console emojis/flags.
+* Goal: shift capacity toward cleaner regions and away from dirtier ones while meeting performance.
+* Carbon data: ElectricityMaps “latest” API; tokens provided via `electricitymap-secret`.
+* Regions: nodes labeled `region=denmark|france|latvia`; each maps to an `nginx-*` Deployment.
+* Loop: runs every `LOOP_PERIOD` (default 30s), inspecting ready worker nodes.
+* CPU: reads metrics via metrics-server; falls back to simulated CPU if unavailable.
+* Carbon cache: 5-minute TTL (`CARBON_CACHE_TTL`) to cut API calls and avoid rate limits.
+* Decision metric: **cluster average CPU** vs thresholds (`SCALE_UP_THRESHOLD`, `SCALE_DOWN_THRESHOLD`).
+* Scale up: add a replica on the **cleanest** region (capped by `MAX_REPLICAS`).
+* Scale down: remove from the **dirtiest** region with replicas > `MIN_REPLICAS`; fallback to next dirtiest.
+* Anti-flap: requires `HOLD_CYCLES` consecutive breaches and enforces `COOLDOWN` after actions.
+* Safety rails: global `MIN_REPLICAS`/`MAX_REPLICAS` and baseline healing to ensure floors.
+* Logging: structured JSON by default; console mode adds emojis, colors, and country flags.
+* Container: multi-stage Dockerfile builds static binary; Alpine runtime with CA certs.
+* RBAC: `ServiceAccount` + `ClusterRole` with `deployments/scale`; bound via `ClusterRoleBinding`.
+* Autoscaler Deployment: env-driven config for thresholds, cooldowns, replicas, logging format.
+* Workloads: three per-country NGINX Deployments with nodeSelector/affinity to pin to labeled nodes.
+* Environment: kind cluster (1 control plane + 3 workers) labeled per region; scripts to set up and load image.
+* Testing & future: stress pods to trigger scaling; add health/metrics endpoints, leader election, Helm, and tests.
+
+
+
+
+
+#Denmark
+token: DENMARK_TOEKN
+
+curl 'https://api.electricitymaps.com/v3/carbon-intensity/latest?zone=DK' \
+-H 'auth-token: DENMARK_TOEKN' | jq .
+
+-------------------------
+
+
+# Latvia
+token: LATVIA_TOEKN
+
+curl 'https://api.electricitymaps.com/v3/carbon-intensity/latest?zone=LV' \
+-H 'auth-token: LATVIA_TOEKN' | jq .
+
+
+
+#France
+token: FRANCE_TOEKN
+
+curl 'https://api.electricitymaps.com/v3/carbon-intensity/latest?zone=FR' \
+-H 'auth-token: FRANCE_TOEKN' | jq .
+
+
+
+
+kubectl label nodes custom-cluster-worker node-name=Denmark
+kubectl label nodes custom-cluster-worker2 node-name=France
+kubectl label nodes custom-cluster-worker3 node-name=Latvia
+
+
+                "denmark": "DENMARK_TOEKN",
+                "france":  "FRANCE_TOEKN",
+                "latvia":  "LATVIA_TOEKN",
+
+export DENMARK_TOKEN=DENMARK_TOEKN
+export FRANCE_TOKEN=FRANCE_TOEKN
+export LATVIA_TOKEN=LATVIA_TOEKN
+
+
+kubectl create secret generic electricitymap-secret \
+  --from-literal=denmark=DENMARK_TOEKN \
+  --from-literal=france=FRANCE_TOEKN \
+  --from-literal=latvia=LATVIA_TOEKN
+
+
+
+
+================================================================
+
+Labelling to nodes
+*******************
+
+kubectl label node carbon-aware-worker  region=denmark  --overwrite
+kubectl label node carbon-aware-worker2 region=france   --overwrite
+kubectl label node carbon-aware-worker3 region=latvia   --overwrite
+
+Check node names
+*******************
+kubectl get nodes --show-labels | grep carbon-aware
+
+
+Step 1: Check metrics-server pod
+
+
+ kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+ 
+  kubectl edit deployment metrics-server -n kube-system
+
+  ````` 
+  spec:
+      containers:
+      - args:
+        - --cert-dir=/tmp
+        - --secure-port=10250
+        - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+        - --kubelet-use-node-status-port
+        - --metric-resolution=15s
+        - --kubelet-insecure-tls
+        - --kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP
+        image: registry.k8s.io/metrics-server/metrics-server:v0.8.0
+
+
+  `````
+Run:  kubectl get pods -n kube-system | grep metrics-server
+
+
+Delete all node of nginx
+*****************************
+
+kubectl delete pod -l app=nginx
+
+
+
+go mod tidy
+
+
+Get all cluster context 
+************************
+kubectl config get-contexts
+
+
+Assuming your local image was loaded to the kind-carbon-aware cluster:
+*********************************************************************
+kubectl config use-context kind-carbon-aware
+
+
+Build the docker image
+*********************
+docker build -t k8s-autoscaler:local .
+
+
+Load it into your kind cluster:
+********************************
+kind load docker-image k8s-autoscaler:local --name carbon-aware
+
+
+Apply your deployment:
+********************************
+kubectl apply -f autoscaler-deployment.yaml
+
+
+Check logs:
+********************************
+kubectl logs -f deployment/k8s-autoscaler
+
+
+Check labels of nodes
+*************************
+kubectl get nodes --show-labels | grep carbon-aware-worker
+
+
+
+Restart the autoscaler to pick up new image
+********************************
+kubectl delete pod -l app=autoscaler
+kubectl wait --for=condition=ready pod -l app=autoscaler --timeout=60s
+
+
+Increase pods replica
+***********************
+Either edit your nginx-country-deployments.yaml to replicas: 2 for all three, or patch live:
+
+
+kubectl scale deploy/nginx-denmark --replicas=2
+kubectl scale deploy/nginx-france  --replicas=2
+kubectl scale deploy/nginx-latvia  --replicas=2
+kubectl get deploy -w
+
+get Pods country
+*****************
+kubectl get deploy nginx-denmark nginx-france nginx-latvia
+
+kubectl rollout status deploy/k8s-autoscaler
+
+kubectl version --short
+go version
+kind --versionk
+
+
+
+# Make scale-up easier and scale-down more aggressive
+**********************************************************
+kubectl set env deploy/k8s-autoscaler SCALE_UP_THRESHOLD=20 SCALE_DOWN_THRESHOLD=10
+
+# Make speed up faster
+*******************************
+kubectl set env deploy/k8s-autoscaler HOLD_CYCLES=1 COOLDOWN=20s
+kubectl rollout status deploy/k8s-autoscaler
+
+
+Increase load on node, so scale up happen
+******************************************
+
+# France
+*********
+kubectl run hot-fr-1 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"france"}}}' \
+  -- sh -c 'while :; do :; done'
+
+kubectl run hot-fr-2 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"france"}}}' \
+  -- sh -c 'while :; do :; done'
+
+kubectl run hot-fr-3 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"france"}}}' \
+  -- sh -c 'while :; do :; done'
+
+kubectl run hot-fr-4 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"france"}}}' \
+  -- sh -c 'while :; do :; done'
+
+kubectl run hot-fr-5 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"france"}}}' \
+  -- sh -c 'while :; do :; done'
+
+# Denmark
+*********
+kubectl run hot-dk-1 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"denmark"}}}' \
+  -- sh -c 'while :; do :; done'
+
+kubectl run hot-dk-2 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"denmark"}}}' \
+  -- sh -c 'while :; do :; done'
+
+kubectl run hot-dk-3 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"denmark"}}}' \
+  -- sh -c 'while :; do :; done'
+
+kubectl run hot-dk-4 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"denmark"}}}' \
+  -- sh -c 'while :; do :; done'
+
+kubectl run hot-dk-5 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"denmark"}}}' \
+  -- sh -c 'while :; do :; done'
+
+  # Latvia
+*********
+kubectl run hot-lt-1 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"latvia"}}}' \
+  -- sh -c 'while :; do :; done'
+
+kubectl run hot-lt-2 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"latvia"}}}' \
+  -- sh -c 'while :; do :; done'
+
+kubectl run hot-lt-3 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"latvia"}}}' \
+  -- sh -c 'while :; do :; done'
+
+kubectl run hot-lt-4 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"latvia"}}}' \
+  -- sh -c 'while :; do :; done'
+
+kubectl run hot-lt-5 --image=busybox --restart=Never \
+  --overrides='{"spec":{"nodeSelector":{"region":"latvia"}}}' \
+  -- sh -c 'while :; do :; done'
+
+
+
+Deleting pods
+*****************
+kubectl delete pod hot-fr hot-dk hot-lt --ignore-not-found
+kubectl delete pod hot-fr-1 hot-dk-1 hot-lt-1 --ignore-not-found
+kubectl delete pod hot-fr-2 hot-dk-2 hot-lt-2 --ignore-not-found
+kubectl delete pod hot-fr-3 hot-dk-3 hot-lt-3 --ignore-not-found
+kubectl delete pod hot-fr-4 hot-dk-4 hot-lt-4 --ignore-not-found
+kubectl delete pod hot-fr-5 hot-dk-5 hot-lt-5 --ignore-not-found
+
+
+
+# Decode a secret token from base64 converted to normal
+**************************************************************
+kubectl get secret electricitymap-secret -o jsonpath='{.data.denmark}' | base64 -d; echo
+
+
+
+# Check pod is working
+***********************
+kubectl exec -it deploy/nginx-france -- sh -c 'curl http://127.0.0.1'
+
+
+
+# Build go packages
+************************
+go mod init carbon-autoscaler        # create go.mod
+go mod tidy                          # add missing / remove unused deps

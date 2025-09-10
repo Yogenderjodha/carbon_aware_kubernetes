@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-autoscaler
+  labels:
+    app: autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: autoscaler
+  template:
+    metadata:
+      labels:
+        app: autoscaler
+    spec:
+      serviceAccountName: autoscaler-sa
+      containers:
+      - name: autoscaler
+        image: k8s-autoscaler:local
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: DENMARK_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: electricitymap-secret
+              key: denmark
+        - name: FRANCE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: electricitymap-secret
+              key: france
+        - name: LATVIA_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: electricitymap-secret
+              key: latvia
+
+
+        # Runtime knobs (tweak freely)
+        - name: NAMESPACE
+          value: "default"
+        - name: LOOP_PERIOD
+          value: "30s"
+        - name: SCALE_UP_THRESHOLD
+          value: "45"
+        - name: SCALE_DOWN_THRESHOLD
+          value: "25"
+        - name: HOLD_CYCLES
+          value: "3"
+        - name: COOLDOWN
+          value: "1m"
+        - name: MIN_REPLICAS
+          value: "1"
+        - name: MAX_REPLICAS
+          value: "10"
+        - name: CARBON_CACHE_TTL
+          value: "5m"

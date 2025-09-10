@@ -1,0 +1,43 @@
+# ServiceAccount for the autoscaler
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: autoscaler-sa
+  namespace: default
+
+---
+# ClusterRole giving access to node metrics
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: autoscaler-role
+rules:
+  - apiGroups: [""]             # Core API group
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]         # Deployments
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "update", "patch"]
+
+
+---
+# ClusterRoleBinding to bind the role to the ServiceAccount
+#
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: autoscaler-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: autoscaler-role
+subjects:
+  - kind: ServiceAccount
+    name: autoscaler-sa
+    namespace: default
